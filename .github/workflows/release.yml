@@ -92,6 +92,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Need the tag object and full history for note generation.
+          fetch-depth: 0
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -99,11 +102,27 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Resolve the commit this tag points at
+        id: target
+        shell: bash
+        # Pin target_commitish to a commit SHA rather than letting the action
+        # default it. The default is the branch the workflow was dispatched
+        # from, which is not always the release's own branch: an earlier run
+        # recorded a temporary branch name here, and once that branch was
+        # deleted every later call to the release-notes API failed with
+        # "Invalid target_commitish parameter". A SHA can never go stale.
+        run: |
+          set -euo pipefail
+          sha="$(git rev-list -n 1 "$GITHUB_REF")"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Releasing $GITHUB_REF at $sha"
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           # Generated notes are the changelog; the tag is the release name.
           generate_release_notes: true
+          target_commitish: ${{ steps.target.outputs.sha }}
           files: |
             dist/*
           draft: false
