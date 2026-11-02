@@ -32,7 +32,7 @@ First public release.
 - **Zero-dependency core.** Pure Python standard library, Python 3.9 and newer.
   No compilation step, no external binaries, no `dig` or `gobuster` required.
 - **Termux/Android support as a first-class target.** `pkg install python` followed
-  by `pip install subpy` is a complete installation.
+  by one `pip install` from the repository is a complete installation.
 - **Passive enumeration from 21 sources**, twelve of which need no API key:
   - Certificate Transparency: crt.sh, Cert Spotter, Meta CT, Censys (key).
   - Public DNS datasets: HackerTarget, RapidDNS, subdomain.center,

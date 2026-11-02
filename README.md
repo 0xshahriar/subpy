@@ -21,7 +21,7 @@
 ## Why subpy?
 
 - **Zero hard dependencies.** Pure Python standard library, 3.9 and up. No Go, no Rust,
-  no `dig`, no `gobuster`, no compile step — `pip install subpy` and you are done.
+  no `dig`, no `gobuster`, no compile step — one `pip install` and you are done.
 - **Termux is a first-class target.** Works on Android with a single `pkg install python`,
   including the network quirks mobile carriers introduce.
 - **Wildcard handling that actually holds up.** All four cases are fingerprinted —
@@ -37,23 +37,29 @@
 
 ## Install
 
-### pip
+> [!IMPORTANT]
+> **Not yet on PyPI under this name.** The `subpy` project on PyPI is an
+> unrelated package by another author, so `pip install subpy` installs *that*
+> one. Install from GitHub until the naming is settled — see
+> [docs/PUBLISHING.md](docs/PUBLISHING.md).
+
+### pip, from GitHub
 
 ```bash
-pip install subpy
+pip install git+https://github.com/0xShahriar/subpy.git
 ```
 
 ### pipx (isolated)
 
 ```bash
-pipx install subpy
+pipx install git+https://github.com/0xShahriar/subpy.git
 ```
 
 ### Termux / Android
 
 ```bash
 pkg install python
-pip install subpy
+pip install git+https://github.com/0xShahriar/subpy.git
 ```
 
 No `clang`, no `rust`, no NDK toolchain. If DNS is filtered on mobile data,
