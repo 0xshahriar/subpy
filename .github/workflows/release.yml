@@ -60,6 +60,13 @@ jobs:
     name: publish to PyPI
     needs: build
     runs-on: ubuntu-latest
+    # The distribution name `subpy` is already registered on PyPI by an
+    # unrelated project ("a number of useful functions in python", v0.2.0,
+    # author slaxolotl17). Trusted Publishing cannot claim an existing name,
+    # so this job fails until either the name is released by its owner or the
+    # project is renamed. Set SUBPY_SKIP_PYPI=1 in repository variables to
+    # publish GitHub releases only. See docs/PUBLISHING.md.
+    if: vars.SUBPY_SKIP_PYPI != '1'
     # The `pypi` environment is what the PyPI trusted publisher is bound to, so
     # the OIDC subject matches exactly. It also enables manual approval rules.
     environment:
