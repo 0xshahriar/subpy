@@ -74,7 +74,7 @@ speed = [
   "uvloop>=0.19; platform_system != \"Windows\" and sys_platform != \"win32\"",
 ]
 idna = [
-  "aiodns>=3.0",
+  "aiodns>=4.0.4",
   "idna>=3.4",
 ]
 http = [
