@@ -32,7 +32,7 @@ you provide one.
 | `wayback` | crawl | none | Free, unmetered | 0.60 | Wayback CDX index; needs patience |
 | `commoncrawl` | crawl | none | Free, unmetered | 0.55 | Common Crawl URL index; slowest, widest |
 | `urlscan` | crawl | optional `URLSCAN_API_KEY` | Free, key raises quota | 0.65 | urlscan.io public scan index |
-| `otx` | intel | optional `OTX_API_KEY` | Free, key raises quota | 0.70 | AlienVault OTX passive DNS |
+| `otx` | intel | **required** `OTX_API_KEY` | Free account | 0.70 | AlienVault OTX passive DNS |
 
 ## Key gated
 
@@ -46,7 +46,7 @@ it as *skipped: missing KEY* in `-v` output rather than failing the scan.
 | `securitytrails` | intel | `SECURITYTRAILS_API_KEY` | Free account | 0.85 | Strong historical DNS, low quota |
 | `chaos` | DNS | `CHAOS_KEY` | Free with signup | 0.85 | ProjectDiscovery Chaos dataset |
 | `binaryedge` | intel | `BINARYEDGE_API_KEY` | Free account | 0.70 | Subdomain index |
-| `censys` | CT | `CENSYS_API_ID` | Free account | 0.75 | Certificate search API |
+| `censys` | CT | `CENSYS_API_TOKEN` (or `CENSYS_API_ID` + `_SECRET`) | Free account | 0.75 | Certificate search, v3 platform API |
 | `netlas` | DNS | `NETLAS_API_KEY` | Free account | 0.70 | Domain WHOIS and DNS index |
 | `fullhunt` | intel | `FULLHUNT_API_KEY` | Free account | 0.70 | Attack-surface API |
 
@@ -91,10 +91,24 @@ A default run should be boring. Three sources break that promise often enough
 to be excluded:
 
 - **ThreatCrowd** has been intermittently offline for extended periods.
-- **DNSDumpster** requires a CSRF token dance that breaks whenever the page
-  markup changes.
-- **Anubis** responds inconsistently, so it contributes latency without
-  contributing many hosts.
+- **DNSDumpster** has a 50-result anonymous cap. It no longer uses a CSRF
+  token — it is now a bare `POST /htmld/` htmx form — but the contract is
+  undocumented and has broken before.
+- **Anubis** returns a large JSON array that includes numeric and
+  single-character junk labels, so most candidates fail DNS validation. It
+  contributes noise and latency more than hosts.
+
+Two more sources were repaired in 1.0.0 and are worth knowing about:
+
+- **OTX** stopped accepting anonymous requests and now answers HTTP 429
+  `"Anonymous access to this endpoint is limited. Please authenticate."`.
+  It is key-gated, so it is skipped rather than retried on every scan.
+- **Censys** shut down its legacy `search.censys.io/api/v2` endpoint on
+  2026-09-30. subpy now uses the v3 platform API, which takes a personal
+  access token; the old id/secret pair still works if you set both.
+
+Anubis also moved: `jldc.me` returns `301` and `jonlu.ca` `403`, so requests
+go to `anubisdb.com`.
 
 Each one still appears in `--list-sources`, and each still works when the
 upstream service does. Enabling them is one flag away.

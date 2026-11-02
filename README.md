@@ -303,7 +303,7 @@ fwdkim1.hackerone.com   dangling  cname:spfmx1.domainkey.freshemail.io
 
 ## Sources
 
-21 passive sources ship built in. Ten need no key at all.
+21 passive sources ship built in. Twelve need no key at all.
 
 | Group | Count | Examples |
 | --- | --- | --- |
