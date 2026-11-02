@@ -78,7 +78,11 @@ class AnubisSource(PassiveSource):
     # Frequently rate-limits or serves a JS challenge; kept opt-in-safe.
     enabled_by_default = True
 
-    BASE = "https://jldc.me/anubis/subdomains/"
+    # jldc.me and jonlu.ca both redirect (301/403) as of 2026-11-02;
+    # anubisdb.com is the live host. It answers with a huge JSON array that
+    # includes numeric and single-character junk labels, so every candidate
+    # must still be validated by DNS (which the scanner does unconditionally).
+    BASE = "https://anubisdb.com/anubis/subdomains/"
 
     async def fetch(self, ctx: SourceContext) -> Iterable[str]:
         loop = asyncio.get_running_loop()

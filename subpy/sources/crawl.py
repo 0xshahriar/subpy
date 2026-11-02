@@ -170,7 +170,12 @@ class UrlscanSource(PassiveSource):
         hosts: set[str] = set()
         search_after: str = ""
         for _ in range(5):  # 5 * 100 results: deeper pages are rarely useful
-            params = {"q": f"domain:{ctx.domain}", "size": "100"}
+            # "page.domain:" restricts to results whose *page* is in the
+            # target domain. Plain "domain:example.com" returned 100 results
+            # of which 34 pointed at unrelated sites (apnews.com, ...): it
+            # matches any request URL mentioning the domain, so the results
+            # are mostly third-party pages that embed it.
+            params = {"q": f"page.domain:{ctx.domain}", "size": "100"}
             if search_after:
                 params["search_after"] = search_after
 
@@ -395,8 +400,12 @@ class OtxSource(PassiveSource):
 
     name = "otx"
     category = "intel"
-    description = "AlienVault OTX passive DNS"
-    requires_key = False
+    # As of 2026-11-02 this endpoint rejects anonymous callers outright:
+    #   {"detail": "Anonymous access to this endpoint is limited. Please
+    #    authenticate."}  (HTTP 429)
+    # Every Sublist3r-era recipe that calls it unkeyed is therefore broken.
+    description = "AlienVault OTX passive DNS (requires a free API key)"
+    requires_key = True
     key_env = "OTX_API_KEY"
     reliability = 0.7
     rate = 0.5

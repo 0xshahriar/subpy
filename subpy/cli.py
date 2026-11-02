@@ -20,6 +20,7 @@ import sys
 from collections.abc import Sequence
 
 from . import __version__
+from .core.dns import is_valid_name, normalize_name
 from .core.models import Host
 from .core.scanner import ScanConfig, Scanner
 from .core.wordlists import resolve_wordlist_path
@@ -331,7 +332,8 @@ def _fail(message: str) -> int:
     return EXIT_USAGE
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, early_signal: dict | None = None) -> int:
+
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -345,12 +347,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{PROG}: error: a domain is required (-d)", file=sys.stderr)
         return EXIT_USAGE
 
+    # Normalise the way a browser would: accept "https://example.com/path"
+    # and strip it down, but then validate the result properly. Stripping
+    # alone is not enough - it happily turned "exa mple.com" and "a..b" into
+    # accepted targets, and every query would then fail one by one.
     domain = args.domain.strip().lower()
     if "://" in domain:
         domain = domain.split("://", 1)[1]
-    domain = domain.split("/", 1)[0].split(":", 1)[0].strip(".")
-    if not domain or "." not in domain:
+    domain = domain.split("/", 1)[0]
+    domain = domain.split("@")[-1]  # drop any userinfo
+    domain = domain.split(":", 1)[0]  # drop any port
+    domain = domain.strip(".")
+
+    normalised = normalize_name(domain)
+    if not normalised or not is_valid_name(normalised) or "." not in normalised:
         return _fail(f"'{args.domain}' does not look like a domain")
+    domain = normalised
 
     if args.passive_only and args.active_only:
         return _fail("--passive-only and --active-only are mutually exclusive")
@@ -426,7 +438,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     # inside passive sources, so a Ctrl-C during a slow source kept the
     # process alive for 90+ seconds (measured, stack in Runner.close). Skipping
     # that step lets the process exit immediately; the OS reclaims the socket.
-    terminated: dict = {"signal": 0}
+    # Carry over a signal that arrived during startup, before the loop existed.
+    terminated: dict = {"signal": (early_signal or {}).get("value", 0)}
     hosts: list[Host] = []
     exit_code = EXIT_OK
 
@@ -486,6 +499,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
             else:
                 installed.append(sig)
+
+        # A signal that arrived after the startup check but before the loop
+        # handlers went live is sitting in the shared state; honour it now
+        # rather than silently scanning to completion.
+        if early_signal and early_signal.get("value"):
+            _request_stop(early_signal["value"])
 
         progress_task = None
         if reporter.progress_enabled:

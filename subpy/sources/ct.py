@@ -229,24 +229,36 @@ class CensysCTSource(PassiveSource):
     rate = 1.0
     enabled_by_default = False
 
-    BASE = "https://search.censys.io/api/v2/certificates/search"
+    # The legacy v2 endpoint was decommissioned on 2026-09-30 and now
+    # returns 403 with an explicit "decommissioned" body. The replacement is
+    # the platform API, which uses a different auth scheme (a personal access
+    # token rather than id/secret) and a different query dialect.
+    BASE = "https://api.platform.censys.io/v3/global/search/query"
 
     async def fetch(self, ctx: SourceContext) -> Iterable[str]:
-        api_id = ctx.key("CENSYS_API_ID")
-        api_secret = ctx.key("CENSYS_API_SECRET")
-        if not api_id or not api_secret:
-            raise RuntimeError("missing CENSYS_API_ID / CENSYS_API_SECRET")
+        # Accept either the new personal access token or the legacy id/secret
+        # pair, so existing setups keep working against the new base URL.
+        token = ctx.key("CENSYS_API_TOKEN")
+        if not token:
+            api_id = ctx.key("CENSYS_API_ID")
+            api_secret = ctx.key("CENSYS_API_SECRET")
+            if api_id and api_secret:
+                import base64
 
-        import base64
+                token = base64.b64encode(f"{api_id}:{api_secret}".encode()).decode()
+        if not token:
+            raise RuntimeError("missing CENSYS_API_TOKEN or CENSYS_API_ID/_SECRET")
 
-        token = base64.b64encode(f"{api_id}:{api_secret}".encode()).decode()
         loop = asyncio.get_running_loop()
         data = await loop.run_in_executor(
             None,
             lambda: ctx.http.get_json(
                 self.BASE,
-                params={"q": f"names:*.{ctx.domain}", "per_page": "100"},
-                headers={"Authorization": f"Basic {token}", "Accept": "application/json"},
+                params={"q": f"names:*.{ctx.domain}", "page_size": "100"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                },
                 timeout=25.0,
                 retries=1,
                 rate=self.rate,
@@ -254,7 +266,9 @@ class CensysCTSource(PassiveSource):
             ),
         )
         hosts: set[str] = set()
-        for hit in ((data or {}).get("result") or {}).get("hits") or []:
-            for raw in hit.get("names") or []:
+        # The v3 envelope nests hits under result.hits, same as v2.
+        result = (data or {}).get("result") or {}
+        for hit in result.get("hits") or []:
+            for raw in hit.get("names") or ():
                 hosts.add(str(raw))
         return hosts
