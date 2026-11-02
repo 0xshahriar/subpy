@@ -75,7 +75,7 @@ speed = [
 ]
 idna = [
   "aiodns>=3.0",
-  "idna>=3.4",
+  "idna>=3.20",
 ]
 http = [
   "httpx>=0.27",
