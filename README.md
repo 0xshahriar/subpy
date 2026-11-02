@@ -134,7 +134,7 @@ existing tools.
 | --- | --- |
 | Existence = non-empty answer section | `example.com`, `cloudflare.com`, `github.com` and `apple.com` all return `NOERROR` with zero answers for names that do not exist. Trusting `NXDOMAIN` gave 104 false positives in 105 probes. |
 | Rotating wildcards corroborated by a control probe | `vercel.app` derives a different address per label inside one `/24`, so address-set matching can never fire. 10/10 random labels still filtered, 0 real hosts lost. |
-| 45 verified wildcard suffixes | 29 other "wildcard" suffixes in circulation (`cloudfront.net`, `azurewebsites.net`, `herokudns.com`) return `NXDOMAIN` for random labels. Treating them as wildcards deletes real subdomains. |
+| 44 verified wildcard suffixes | 30 other "wildcard" suffixes in circulation (`cloudfront.net`, `azurewebsites.net`, `fly.dev`, `herokudns.com`) return `NXDOMAIN` for random labels. Treating them as wildcards deletes real subdomains. |
 | 16 in-flight queries per resolver | Public resolvers drop packets silently rather than sending `SERVFAIL`. 16 measured fastest at 328 qps with 0% loss; 64 cost 30% throughput and lost 2.5%. |
 | Least-in-flight resolution, not fastest-first | Ranking by RTT sends every query to one server until it throttles, collapsing a 500 qps pool to 30 qps. |
 

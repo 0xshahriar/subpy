@@ -209,3 +209,77 @@ class TestWildcardManager(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVerifiedSuffixLists(unittest.TestCase):
+    """Guards against the two list-membership bugs found in review."""
+
+    def test_fly_dev_is_not_treated_as_a_wildcard(self):
+        # fly.dev answers 0/12 for random labels; treating it as a wildcard
+        # deleted every real host CNAMEd into Fly.io.
+        from subpy.core.wildcard import SAA_WILDCARD_SUFFIXES
+
+        self.assertNotIn("fly.dev", SAA_WILDCARD_SUFFIXES)
+
+    def test_fly_dev_is_annotated_as_shared_infrastructure(self):
+        from subpy.core.wildcard import SHARED_INFRA_SUFFIXES
+
+        self.assertIn("fly.dev", SHARED_INFRA_SUFFIXES)
+
+    def test_lists_do_not_overlap(self):
+        from subpy.core.wildcard import SAA_WILDCARD_SUFFIXES, SHARED_INFRA_SUFFIXES
+
+        overlap = set(SAA_WILDCARD_SUFFIXES) & set(SHARED_INFRA_SUFFIXES)
+        self.assertEqual(overlap, set(), f"a suffix cannot be both: {overlap}")
+
+    def test_suffix_counts_match_documentation(self):
+        from subpy.core.wildcard import SAA_WILDCARD_SUFFIXES, SHARED_INFRA_SUFFIXES
+
+        self.assertEqual(len(SAA_WILDCARD_SUFFIXES), 44)
+        self.assertEqual(len(SHARED_INFRA_SUFFIXES), 30)
+
+
+class TestDeeperLevelProfiling(unittest.TestCase):
+    """detect_for_name must be reachable - it was dead code in v1.0.0."""
+
+    def test_is_wildcard_consults_detect_for_name_for_unprofiled_levels(self):
+        import inspect
+
+        from subpy.core.wildcard import WildcardManager
+
+        source = inspect.getsource(WildcardManager.is_wildcard)
+        self.assertIn(
+            "detect_for_name",
+            source,
+            "is_wildcard must profile an unseen parent level, otherwise "
+            "a.b.example.com is judged only against b.example.com and RFC "
+            "4592 synthesis at depth 2+ leaks through as a real host",
+        )
+
+
+class TestWildcardFilterSafety(unittest.TestCase):
+    """The filter must be conservative when it has no information."""
+
+    def test_disabled_filter_never_drops_anything(self):
+        import asyncio
+
+        from subpy.core.wildcard import WildcardManager
+
+        class _NullResolver:
+            async def query(self, *_a, **_k):
+                return None
+
+        manager = WildcardManager(_NullResolver(), "example.com", enabled=False)
+        self.assertFalse(asyncio.run(manager.is_wildcard("a.example.com", None)))
+
+    def test_none_message_is_never_filtered(self):
+        import asyncio
+
+        from subpy.core.wildcard import WildcardManager
+
+        class _NullResolver:
+            async def query(self, *_a, **_k):
+                return None
+
+        manager = WildcardManager(_NullResolver(), "example.com")
+        self.assertFalse(asyncio.run(manager.is_wildcard("a.example.com", None)))

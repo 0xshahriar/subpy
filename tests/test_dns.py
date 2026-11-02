@@ -294,3 +294,73 @@ class TestHostValidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHostileDoHPayloads(unittest.TestCase):
+    """A broken or malicious DoH endpoint must not raise into the scan."""
+
+    def test_malformed_payloads_return_none(self):
+        from subpy.core.resolver import AsyncResolver
+
+        payloads = [
+            None,
+            [],
+            "not a dict",
+            {"Status": "x"},
+            {"Status": None},
+            {"Status": 0, "Answer": "notalist"},
+            {"Status": 0, "Answer": [None]},
+            {"Status": 0, "Answer": ["string"]},
+            {"Status": 0, "Answer": [{"type": "x", "TTL": "y"}]},
+            {"Status": 0, "Answer": [{"type": 1, "data": "999.1.1.1"}]},
+            {"Status": 0, "Answer": [{"type": 1, "name": None, "data": "1.2.3.4"}]},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                result = AsyncResolver._doh_to_message(payload, "example.com")
+                self.assertTrue(result is None or hasattr(result, "answers"))
+
+
+class TestNegativeCacheBounds(unittest.TestCase):
+    """Transient NODATA must not be cached as if it were authoritative."""
+
+    def test_transient_nodata_is_cached_briefly(self):
+        import inspect
+
+        from subpy.core.resolver import AsyncResolver
+
+        source = inspect.getsource(AsyncResolver.query)
+        self.assertIn(
+            "negative_ttl",
+            source,
+            "an empty answer must use a short negative TTL; the old code "
+            "cached transient NODATA for 300s and turned one resolver "
+            "hiccup into a missed host",
+        )
+        # The bound must be well under the old 300s.
+        self.assertLessEqual(
+            max(int(t) for t in __import__("re").findall(r"negative_ttl = (\d+)", source)),
+            60,
+        )
+
+
+class TestInflightAccounting(unittest.TestCase):
+    """A rejected name must not leak an in-flight slot."""
+
+    def test_encode_failure_decrements_inflight(self):
+        import inspect
+
+        from subpy.core.resolver import AsyncResolver
+
+        source = inspect.getsource(AsyncResolver)
+        # The DNSFormatError branch next to build_query must adjust _inflight.
+        idx = source.find("except DNSFormatError:")
+        self.assertGreater(idx, 0, "build_query error branch not found")
+        window = source[idx : idx + 900]
+        self.assertIn(
+            "_inflight",
+            window,
+            "returning on an encode failure without decrementing _inflight "
+            "leaks a slot; after 16 per server _pick_channels() sees no ready "
+            "channel and load balancing collapses",
+        )

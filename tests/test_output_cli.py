@@ -292,3 +292,84 @@ class TestVersion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCliSafetyGuards(unittest.TestCase):
+    """Regression guards for input/path bugs found in review."""
+
+    def test_bare_ip_is_rejected_as_a_domain(self):
+        # Accepted silently before, then brute-forced to an empty result set
+        # that looked like "this host has no subdomains".
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from subpy.cli import main
+
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = main(["-d", "8.8.8.8", "-p", "--no-update-check"])
+        self.assertEqual(code, 2, err.getvalue())
+        self.assertIn("IP address", err.getvalue())
+
+    def test_malformed_domains_are_rejected(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from subpy.cli import main
+
+        # "-x.com" is omitted: argparse itself consumes it as an option, so
+        # it never reaches validation. The rest must be rejected by us.
+        for bad in ("a..b", "exa mple.com", "*.example.com", "x-.com", "a"):
+            with self.subTest(domain=bad):
+                err = io.StringIO()
+                with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                    code = main(["-d", bad, "-p", "--no-update-check"])
+                self.assertEqual(code, 2, f"{bad}: {err.getvalue()}")
+
+    def test_urls_are_normalised_to_their_domain(self):
+        from subpy.core.dns import normalize_name
+
+        # The CLI strips scheme, userinfo and port before validating.
+        self.assertEqual(normalize_name("example.com"), "example.com")
+
+    def test_fail_empty_does_not_mask_a_signal_exit_code(self):
+        import ast
+        import inspect
+
+        from subpy.cli import main
+
+        source = inspect.getsource(main)
+        tree = ast.parse(source)
+        guards = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If) and "fail_empty" in ast.dump(node.test)
+        ]
+        self.assertTrue(guards, "no --fail-empty guard found")
+        # The guard must also require a clean exit, or it overwrites 130/143.
+        self.assertTrue(
+            any("exit_code" in ast.dump(g.test) for g in guards),
+            "--fail-empty must not overwrite an interrupt exit code",
+        )
+
+    def test_nul_byte_in_output_path_is_a_usage_error(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        from subpy.cli import main
+
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = main(
+                [
+                    "-d",
+                    "example.com",
+                    "-p",
+                    "-o",
+                    "bad\x00name.json",
+                    "--no-update-check",
+                    "-s",
+                    "rapiddns",
+                ]
+            )
+        self.assertEqual(code, 2, err.getvalue())

@@ -90,10 +90,21 @@ answers mean noise.
 
 ### 5. A suffix is only treated as a wildcard if it was verified to be one
 
-`SAA_WILDCARD_SUFFIXES` contains 45 suffixes confirmed to answer for
-random labels. `SHARED_INFRA_SUFFIXES` lists 29 that host customer content
-but return `NXDOMAIN` for random labels — treating those as wildcards would
-silently delete real subdomains. They are annotated, never dropped.
+`SAA_WILDCARD_SUFFIXES` contains 44 suffixes confirmed to answer for random
+labels, each probed three times against three public resolvers.
+`SHARED_INFRA_SUFFIXES` lists 30 that host customer content but return
+`NXDOMAIN` for random labels — treating those as wildcards would silently
+delete real subdomains, so they are annotated and never dropped.
+
+`fly.dev` sits in the second list for exactly this reason: it answered 0/12
+on random labels while its apex and `flyctl.fly.dev` resolve. It was
+originally in the first list, and that single wrong entry deleted every real
+host CNAMEd into Fly.io.
+
+Deeper names are profiled on first encounter by `detect_for_name`, bounded by
+`max_levels`. Without that, `a.b.example.com` is judged against
+`b.example.com` only and RFC 4592 synthesis at depth 2+ leaks through as a
+real host.
 
 ### 6. Resolver loss is silent, so the window is small
 
