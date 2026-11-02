@@ -464,11 +464,6 @@ def main(argv: Sequence[str] | None = None, early_signal: dict | None = None) ->
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        from .core.pool import install_default_executor
-        from .core.pool import shutdown as shutdown_pool
-
-        install_default_executor(loop)
-
         # Install handlers on the loop rather than with signal.signal().
         # Raising KeyboardInterrupt from a plain handler corrupts whatever
         # asyncio is executing and produced "Cannot close a running event
@@ -500,18 +495,20 @@ def main(argv: Sequence[str] | None = None, early_signal: dict | None = None) ->
             else:
                 installed.append(sig)
 
-        # A signal that arrived after the startup check but before the loop
-        # handlers went live is sitting in the shared state; honour it now
-        # rather than silently scanning to completion.
-        if early_signal and early_signal.get("value"):
-            _request_stop(early_signal["value"])
+        # A signal that arrived during startup is already recorded. There is
+        # nothing to cancel yet (no tasks exist), so skip the scan entirely
+        # and fall through to the normal reporting path, which still writes
+        # the requested output file.
+        stop_before_scan = bool(early_signal and early_signal.get("value"))
+        if stop_before_scan:
+            scanner.stop()
 
         progress_task = None
         if reporter.progress_enabled:
             progress_task = loop.create_task(_progress_loop())
 
         try:
-            hosts = loop.run_until_complete(_scan())
+            hosts = [] if stop_before_scan else loop.run_until_complete(_scan())
         except asyncio.CancelledError:
             hosts = scanner.results()
         except KeyboardInterrupt:
@@ -533,10 +530,9 @@ def main(argv: Sequence[str] | None = None, early_signal: dict | None = None) ->
             for task in pending:
                 task.cancel()
         with contextlib.suppress(Exception):
-            shutdown_pool(wait=False)
-        with contextlib.suppress(Exception):
-            # Deliberately NOT loop.shutdown_default_executor(): that join is
-            # exactly what made Ctrl-C hang.
+            # Detach any thread still parked in a blocking HTTP read, then
+            # close. Deliberately NOT loop.shutdown_default_executor(): that
+            # join is exactly what made Ctrl-C appear to hang.
             loop.close()
         asyncio.set_event_loop(None)
         reporter.finish_progress()
@@ -573,7 +569,16 @@ def main(argv: Sequence[str] | None = None, early_signal: dict | None = None) ->
     # is a valid answer, and non-zero would break pipelines that use subpy as
     # a probe step. Scripts that want the opposite opt in with --fail-empty.
     if args.fail_empty and not hosts:
-        return EXIT_RUNTIME
+        exit_code = EXIT_RUNTIME
+
+    # Everything user-visible is done: the summary is printed and any output
+    # file is written and closed. If a passive source is still parked in a
+    # blocking socket read, threading._shutdown would otherwise join it and
+    # appear to freeze for the length of the HTTP timeout. Leave without it.
+    from .core.pool import abandon_blocked_threads, hard_exit
+
+    if abandon_blocked_threads():
+        hard_exit(exit_code)
     return exit_code
 
 

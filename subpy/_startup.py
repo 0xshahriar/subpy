@@ -55,12 +55,16 @@ from .cli import main as _cli_main  # noqa: E402
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the CLI, reporting a signal that arrived during startup."""
+    """Run the CLI, honouring a signal that arrived during startup.
+
+    The CLI is still called when a signal landed early: it parses arguments,
+    writes an (empty) output file and reports the code, so that
+    ``subpy -o out.json`` interrupted immediately still leaves valid JSON
+    rather than nothing at all.
+    """
     if EARLY_SIGNAL["value"]:
-        # Interrupted before the scan could even begin.
         label = "terminated" if EARLY_SIGNAL["value"] == _EXIT_TERM else "interrupted"
         print(f"! {label} during startup", file=sys.stderr)
-        return EARLY_SIGNAL["value"]
     return _cli_main(argv, early_signal=EARLY_SIGNAL)
 
 

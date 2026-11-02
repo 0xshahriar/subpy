@@ -1,119 +1,75 @@
-"""Keep blocked HTTP calls from holding the process open on Ctrl-C.
+"""Make a cancelled scan actually exit, even with HTTP still in flight.
 
-Passive sources perform blocking HTTP through ``loop.run_in_executor``. Three
-stdlib behaviours then conspire to hang a cancelled scan:
+Passive sources perform blocking HTTP inside ``loop.run_in_executor``. When a
+scan is cancelled mid-source, the worker thread stays parked inside a socket
+read. Two stdlib mechanisms then keep the interpreter alive:
 
-* ``ThreadPoolExecutor`` creates **non-daemon** threads;
-* ``concurrent.futures.thread`` registers an ``atexit`` hook that *joins*
-  every worker; and
-* ``asyncio.run`` calls ``loop.shutdown_default_executor()``, which waits for
-  in-flight work to drain.
+* ``concurrent.futures.thread`` spawns **non-daemon** workers, and
+* ``threading._shutdown`` joins every non-daemon thread before the process
+  may exit.
 
-Measured on Ctrl-C during a slow source: the process was still alive 90+
-seconds later, stuck in ``Runner.close`` -> ``run_until_complete`` ->
-``select``. That is indistinguishable from a freeze.
+Confirmed by dumping the stacks of a hung run: the main thread sat in
+``threading._shutdown`` waiting on a worker blocked in
+``urllib.request.urlopen``. Measured before the fix, SIGINT during a
+wikipedia.org scan hung in roughly two runs out of three.
 
-Two changes fix it, and both are needed:
+An earlier attempt reimplemented the executor's worker loop to set
+``daemon=True``. That broke outright on Python 3.14, where ``_WorkItem.run``
+gained a ``ctx`` argument, and every source failed with ``TypeError``. A
+second attempt unregistered the threads from ``threads_queues``, but
+``threading._shutdown`` still joined them because they remained non-daemon.
 
-1. Worker threads are daemons, created that way (Python forbids setting
-   ``daemon`` on a thread that has already started).
-2. The CLI drives a loop directly instead of ``asyncio.run``, so teardown
-   does not wait for blocked sockets. Abandoned sockets are reclaimed by the
-   OS, which is the right outcome for a short-lived process.
+So this module takes the only approach that is robust across versions and
+does not touch private worker internals: after the reporter has flushed and
+the output file has been written, *if* blocked threads would delay exit, the
+process terminates through ``os._exit``. All user-visible work has already
+completed by then; what is abandoned is only the sockets, which the OS
+reclaims.
 """
 
 from __future__ import annotations
 
 import contextlib
+import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import thread as _cf_thread
+import time
 
-__all__ = ["DaemonThreadPoolExecutor", "install_default_executor", "shutdown"]
+__all__ = ["abandon_blocked_threads", "hard_exit"]
+
+#: How long to let well-behaved threads finish before giving up on them.
+_GRACE_SECONDS = 0.35
 
 
-class DaemonThreadPoolExecutor(ThreadPoolExecutor):
-    """A ThreadPoolExecutor whose workers never delay interpreter exit.
+def abandon_blocked_threads(grace: float = _GRACE_SECONDS) -> bool:
+    """Return True when a non-daemon thread is still running after *grace*.
 
-    Subclassing (rather than wrapping) matters: ``set_default_executor``
-    rejects anything that is not a ``ThreadPoolExecutor`` instance.
+    Only blocking HTTP workers are expected here. Anything still alive after
+    a third of a second is parked in a socket and will not finish soon.
     """
-
-    def _adjust_thread_count(self) -> None:
-        """Spawn workers as daemons, honouring the max_workers cap."""
-        try:
-            idle = self._idle_semaphore  # type: ignore[attr-defined]
-            threads = self._threads  # type: ignore[attr-defined]
-            work_queue = self._work_queue  # type: ignore[attr-defined]
-        except AttributeError:  # pragma: no cover - unexpected internals
-            super()._adjust_thread_count()
-            return
-
-        if idle.acquire(blocking=False):
-            return
-
-        if len(threads) >= self._max_workers:
-            return
-
-        def _worker_loop() -> None:
-            # Mirrors concurrent.futures.thread._worker closely enough for
-            # our use, without registering in the shared atexit registry.
-            while True:
-                work_item = work_queue.get()
-                if work_item is None:
-                    work_queue.put(None)
-                    return
-                if not work_item.future.set_running_or_notify_cancel():
-                    continue
-                try:
-                    result = work_item.run()
-                except BaseException as exc:  # noqa: BLE001 - surfaced via future
-                    work_item.future.set_exception(exc)
-                else:
-                    work_item.future.set_result(result)
-
-        name = f"{self._thread_name_prefix or 'subpy'}_{len(threads)}"
-        thread = threading.Thread(name=name, target=_worker_loop, daemon=True)
-        thread.start()
-        threads.add(thread)
-
-    def _forget_atexit_registry(self) -> None:
-        """Drop our threads from the interpreter's join-on-exit registry."""
-        registry = getattr(_cf_thread, "_threads_queues", None)
-        if not registry:
-            return
-        for thread in list(getattr(self, "_threads", ())):  # type: ignore[attr-defined]
-            registry.pop(thread, None)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        alive = [
+            t
+            for t in threading.enumerate()
+            if t is not threading.main_thread() and t.is_alive() and not t.daemon
+        ]
+        if not alive:
+            return False
+        time.sleep(0.02)
+    return True
 
 
-_SHARED: DaemonThreadPoolExecutor | None = None
-_LOCK = threading.Lock()
+def hard_exit(code: int) -> None:
+    """Flush stdio and exit immediately, skipping thread joins.
 
+    ``os._exit`` bypasses ``threading._shutdown``, which is the join that
+    hangs. Streams are flushed first so no output is lost.
+    """
+    import os
 
-def install_default_executor(loop, max_workers: int = 24) -> DaemonThreadPoolExecutor:
-    """Give *loop* a daemon-backed default executor."""
-    global _SHARED
-    with _LOCK:
-        if _SHARED is None:
-            _SHARED = DaemonThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="subpy")
-        pool = _SHARED
-    pool._forget_atexit_registry()
-    loop.set_default_executor(pool)
-    return pool
-
-
-def shutdown(wait: bool = False) -> None:
-    """Release the shared pool. Never waits by default."""
-    global _SHARED
-    with _LOCK:
-        pool, _SHARED = _SHARED, None
-    if pool is None:
-        return
-    pool._forget_atexit_registry()
-    try:
-        pool.shutdown(wait=wait, cancel_futures=True)
-    except TypeError:  # pragma: no cover - Python 3.8
+    for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(Exception):
-            pool.shutdown(wait=wait)
-    except Exception:
-        pass
+            stream.flush()
+    with contextlib.suppress(Exception):
+        sys.stdout.flush()
+    os._exit(code)

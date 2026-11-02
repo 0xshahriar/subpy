@@ -17,6 +17,7 @@ import os
 import pathlib
 import signal
 import sys
+import tempfile
 import unittest
 
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "subpy"
@@ -437,3 +438,95 @@ class TestInterruptBehaviour(unittest.TestCase):
                 payload = json.load(handle)
             self.assertIn("hosts", payload)
             self.assertGreaterEqual(payload["count"], 1)
+
+
+class TestStartupSignalHandling(unittest.TestCase):
+    """A signal during startup must not kill the process or lose output.
+
+    Cold start costs ~2.3s (asyncio plus the scanner). Before the early guard
+    existed, a SIGTERM in that window killed the process outright with exit
+    -15 instead of the documented 143.
+    """
+
+    def test_sigterm_during_startup_returns_143(self):
+        import subprocess
+        import time
+
+        process = subprocess.Popen(
+            [sys.executable, "-m", "subpy", "-d", "example.com", "--no-update-check", "--no-color"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(PACKAGE_ROOT.parent),
+        )
+        time.sleep(0.8)  # squarely inside the import window
+        process.send_signal(signal.SIGTERM)
+        try:
+            _stdout, stderr = process.communicate(timeout=25)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            self.fail("subpy did not exit within 25s of SIGTERM")
+        self.assertEqual(process.returncode, 143, f"stderr: {stderr[-500:]}")
+
+    def test_interrupt_still_writes_valid_output_file(self):
+        """Interrupted runs must leave parseable JSON, never a partial file."""
+        import subprocess
+        import time
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "early.json")
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "subpy",
+                    "-d",
+                    "wikipedia.org",
+                    "-o",
+                    target,
+                    "-f",
+                    "json",
+                    "--no-update-check",
+                    "--no-color",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=str(PACKAGE_ROOT.parent),
+            )
+            time.sleep(1.0)
+            process.send_signal(signal.SIGINT)
+            try:
+                process.communicate(timeout=25)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                self.fail("subpy did not exit within 25s of SIGINT")
+
+            self.assertTrue(os.path.isfile(target), "no output file written")
+            with open(target, encoding="utf-8") as handle:
+                payload = json.load(handle)  # raises if truncated
+            self.assertEqual(payload["count"], len(payload["hosts"]))
+
+
+class TestDaemonSafety(unittest.TestCase):
+    """The shutdown helper must never block or raise."""
+
+    def test_abandon_detects_no_blocked_threads_normally(self):
+        from subpy.core.pool import abandon_blocked_threads
+
+        self.assertFalse(abandon_blocked_threads(grace=0.05))
+
+    def test_abandon_detects_a_blocked_non_daemon_thread(self):
+        import threading
+
+        from subpy.core.pool import abandon_blocked_threads
+
+        release = threading.Event()
+        worker = threading.Thread(target=release.wait, daemon=False)
+        worker.start()
+        try:
+            self.assertTrue(abandon_blocked_threads(grace=0.1))
+        finally:
+            release.set()
+            worker.join(timeout=2)
