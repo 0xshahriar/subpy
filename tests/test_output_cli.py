@@ -353,6 +353,8 @@ class TestCliSafetyGuards(unittest.TestCase):
         )
 
     def test_nul_byte_in_output_path_is_a_usage_error(self):
+        # No network: --passive-only with every source excluded means the
+        # scan is empty and fast, so this cannot flake on a slow endpoint.
         import io
         from contextlib import redirect_stderr, redirect_stdout
 
@@ -364,12 +366,13 @@ class TestCliSafetyGuards(unittest.TestCase):
                 [
                     "-d",
                     "example.com",
-                    "-p",
+                    "-a",
+                    "--no-wordlist",
+                    "--no-permutations",
+                    "--no-wildcard",
                     "-o",
                     "bad\x00name.json",
                     "--no-update-check",
-                    "-s",
-                    "rapiddns",
                 ]
             )
         self.assertEqual(code, 2, err.getvalue())
