@@ -57,6 +57,10 @@ First public release.
 - **Automatic update check** against GitHub releases, cached for about 24 hours.
   Disabled with `--no-update-check` or `SUBPY_NO_UPDATE`. It reports, it never
   self-updates.
+- **Nameservers are not subdomains.** The domain's own delegation
+  (`a.ns.example.com`) resolves like any other host, so every source returns
+  it. It is excluded by exact match against the NS RRset and SOA MNAME rather
+  than by a label pattern, and `--include-nameservers` restores it.
 - **Dangling CNAME detection.** A host whose CNAME target does not resolve is
   flagged as a subdomain-takeover candidate, with the hosting provider named
   when the target sits in known shared infrastructure.

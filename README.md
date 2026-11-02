@@ -158,6 +158,7 @@ subpy -d DOMAIN [options]
 | `-c`, `--concurrency` | int | Concurrent queries (default `200`) |
 | `-t`, `--timeout` | float | Per-query timeout in seconds (default `2.0`) |
 | `--no-wildcard` | — | Disable wildcard detection and filtering |
+| `--include-nameservers` | — | Report the domain's own nameservers as subdomains |
 | `--wildcard-samples` | int | Random probes per zone level (default `3`) |
 | `-s`, `--sources` | list | Comma-separated sources to use |
 | `--exclude-sources` | list | Comma-separated sources to skip |
