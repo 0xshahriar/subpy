@@ -1,0 +1,206 @@
+# SPDX-License-Identifier: MIT
+# Packaging metadata for subpy — pure standard-library subdomain enumeration toolkit.
+# Reference: https://packaging.python.org/en/latest/specifications/pyproject-toml/
+
+[build-system]
+# setuptools>=61 is the floor for PEP 621 [project] tables, but the PEP 639
+# SPDX `license = "MIT"` string + `license-files` used below need setuptools>=77.
+# Declaring 77 as the floor keeps build isolation from picking an older
+# setuptools that would reject the license field.
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subpy"
+# Version is DYNAMIC, read from subpy.__version__ (see [tool.setuptools.dynamic]).
+# Chosen because subpy/__init__.py defines `__version__ = "1.0.0"`, so the source
+# tree is the single source of truth and the CLI, runtime code and packaging can
+# never drift apart. __init__.py only sets dunders, so the attr lookup is cheap.
+dynamic = ["version"]
+description = "Fast, dependency-free subdomain enumeration toolkit written in pure Python."
+readme = "README.md"
+requires-python = ">=3.9"
+
+# Zero hard runtime dependencies: everything is stdlib. Extras below are opt-in.
+dependencies = []
+
+license = "MIT"
+license-files = ["LICENSE"]
+
+authors = [
+  { name = "Md. Shahriar Alam Shaon", email = "sadjoker.localhost@gmail.com" },
+]
+maintainers = [
+  { name = "Md. Shahriar Alam Shaon", email = "sadjoker.localhost@gmail.com" },
+]
+
+keywords = [
+  "subdomain", "enumeration", "recon", "reconnaissance", "security",
+  "bug-bounty", "dns", "osint", "pentest", "asyncio",
+]
+
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Intended Audience :: Information Technology",
+  # NOTE: no "License ::" classifier here on purpose — PEP 639 forbids mixing a
+  # license classifier with the SPDX `license = "MIT"` expression above.
+  # setuptools>=77 hard-fails the build if both are present.
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: Android",
+  "Operating System :: OS Independent",
+  "Environment :: Console",
+  "Topic :: Security",
+  "Topic :: System :: Networking",
+  "Topic :: System :: Systems Administration",
+  "Natural Language :: English",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.optional-dependencies]
+# uvloop is POSIX-only: it has no Windows wheels and will fail to build there.
+# Both markers are set (redundant on purpose) so the exclusion is unambiguous to
+# pip on every resolver version.
+speed = [
+  "uvloop>=0.19; platform_system != \"Windows\" and sys_platform != \"win32\"",
+]
+idna = [
+  "aiodns>=3.0",
+  "idna>=3.4",
+]
+http = [
+  "httpx>=0.27",
+]
+dev = [
+  "pytest>=7.4",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+  "mypy>=1.8",
+  "build>=1.0",
+  "twine>=5.0",
+]
+
+[project.scripts]
+subpy = "subpy.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/0xShahriar/subpy"
+Repository = "https://github.com/0xShahriar/subpy"
+Issues = "https://github.com/0xShahriar/subpy/issues"
+Changelog = "https://github.com/0xShahriar/subpy/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/0xShahriar/subpy/tree/main/docs"
+Source = "https://github.com/0xShahriar/subpy"
+
+[tool.setuptools]
+# Packages are discovered explicitly below; don't let sdists/installs guess.
+include-package-data = true
+
+[tool.setuptools.dynamic]
+# Read the version attribute without importing the package at build time.
+version = { attr = "subpy.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["subpy*"]
+exclude = ["tests*", "research*", "docs*"]
+
+[tool.setuptools.package-data]
+# Wordlists ship inside the wheel. Glob is used because the data directory may
+# legitimately be absent (the tool falls back to bundled/generated wordlists).
+"subpy.data" = ["*.txt"]
+"subpy" = ["*.txt"]
+
+# ---------------------------------------------------------------------------
+# Ruff — lint + import sorting (replaces flake8/isort).
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = ["subpy", "tests"]
+extend-exclude = ["docs", "research", "build", "dist", ".venv"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "F",   # pyflakes
+  "W",   # pycodestyle warnings
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "SIM", # flake8-simplify
+]
+# E501 stays off: the formatter owns line width, and long URLs/regexes in
+# help text are not worth wrapping.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use `assert False`-style guards and long fixture literals by design.
+"tests/**" = ["B011"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.9"
+packages = ["subpy"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+ignore_missing_imports = true
+# Missing stubs for optional extras (uvloop, aiodns, httpx) must not fail CI.
+follow_untyped_imports = false
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["uvloop.*", "aiodns.*", "httpx.*", "idna.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# The codebase is asyncio-first; pytest-asyncio (dev extra) runs coroutine tests
+# without per-test @pytest.mark.asyncio decorators.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+  "ignore::DeprecationWarning:subpy.*",
+]
+
+# ---------------------------------------------------------------------------
+# coverage.py
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["subpy"]
+branch = true
+omit = [
+  "*/__main__.py",
+  "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+  "except ImportError:",
+]

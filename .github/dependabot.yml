@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: MIT
+# Dependabot: keep Python deps and pinned GitHub Actions current.
+# Note: subpy has zero hard runtime dependencies, so most pip PRs will target
+# the `dev`, `idna`, `http` extras. Grouping keeps that noise to a single PR.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+    # One PR for all non-breaking bumps; major bumps stay separate so a
+    # breaking release can be reviewed (and reverted) on its own.
+    groups:
+      pip-minor-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels:
+      - "dependencies"
+      - "python"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    # Action pins move in lockstep (checkout/upload-artifact/download-artifact);
+    # a single PR avoids a half-upgraded workflow.
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels:
+      - "dependencies"
+      - "github-actions"

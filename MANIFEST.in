@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT
+# MANIFEST.in controls the sdist payload (the wheel uses
+# [tool.setuptools.package-data] in pyproject.toml instead).
+# Reference: https://setuptools.pypa.io/en/latest/userguide/miscellaneous.html
+
+# --- Project / community docs -------------------------------------------------
+# Files are listed individually (not `*.md`) so stray scratch notes never ship.
+include LICENSE
+include README.md
+include CHANGELOG.md
+include SOURCES.md
+include SECURITY.md
+include CONTRIBUTING.md
+include CODE_OF_CONDUCT.md
+
+# --- Packaging metadata -------------------------------------------------------
+include pyproject.toml
+include MANIFEST.in
+
+# --- Runtime package data -----------------------------------------------------
+# Wordlists must be present in the sdist so a wheel can be rebuilt from it.
+# Glob tolerates the directory/file being absent (falls back to generated lists).
+recursive-include subpy/data *.txt
+include subpy/*.txt
+
+# --- Developer docs kept out of the sdist --------------------------------
+# prune removes a directory wholesale; globs above only add files.
+recursive-exclude docs *
+prune docs
+prune research
+prune tests
+
+# --- Build / cache noise ------------------------------------------------------
+global-exclude *.py[cod] __pycache__ *.so *.dylib *.dll *.pyd
+global-exclude .DS_Store .pytest_cache .mypy_cache .ruff_cache .coverage
+global-exclude *.egg-info
+prune build
+prune dist
+prune .github
+prune .venv

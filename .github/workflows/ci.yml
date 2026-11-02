@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: MIT
+# Continuous integration: lint + type-check + multi-platform test matrix.
+# subpy is pure-stdlib, so the matrix is the main safety net: it proves the
+# package imports, builds and its CLI runs on every OS/Python we claim to support.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default; no job here needs to write anything back.
+permissions:
+  contents: read
+
+# Superseded pushes/PRs cancel their in-flight runs to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep pip quiet and disable its version nag in logs.
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }} / py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    # Never let one red cell mask the rest of the matrix.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          # Cache key derives from pyproject.toml (deps live in extras there).
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package with dev extras
+        # Editable install mirrors local usage and exercises the build backend,
+        # so a broken pyproject.toml fails here rather than at release time.
+        run: python -m pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: python -m ruff check subpy
+
+      - name: Run tests
+        # `tests/` may be empty while the suite is being written; pytest exits 5
+        # ("no tests collected"), which we treat as a pass so the matrix still
+        # proves install/import/CLI integrity. Real failures (1) still fail.
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest || status=$?
+          if [ "${status:-0}" -eq 5 ]; then
+            echo "::warning::No tests collected yet — skipping."
+            exit 0
+          fi
+          exit "${status:-0}"
+
+      - name: Smoke test CLI (offline)
+        # Proves the installed console entry point resolves and argparse wiring
+        # works without touching the network or requiring DNS access.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m subpy --version
+          python -m subpy --help
+          subpy --version
+
+  lint:
+    name: lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dev tooling
+        run: python -m pip install -e ".[dev]"
+
+      - name: Ruff check
+        run: python -m ruff check subpy
+
+      # mypy is advisory: the annotation surface is still being tightened, so it
+      # reports findings without blocking PRs. Remove continue-on-error to gate.
+      - name: mypy
+        continue-on-error: true
+        run: python -m mypy

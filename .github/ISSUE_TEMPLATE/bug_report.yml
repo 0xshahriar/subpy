@@ -1,0 +1,123 @@
+name: Bug Report
+description: Report a crash, wrong result, or behaviour that does not match the docs.
+title: "[BUG] "
+labels: ["bug", "needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a report — it genuinely helps.
+
+        Before you continue, please check that:
+        - The issue is not already open or recently closed.
+        - You are running the latest `subpy` (`pip install -U subpy`).
+        - You were **authorized** to scan the target you were scanning.
+          Reports about scanning third-party infrastructure without permission
+          are closed without discussion.
+
+        ⚠️ **Never paste real API keys** into this form.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: "subpy exited with code 1 and printed no hosts, although crt.sh returns 42 for this domain."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: "The 42 hosts from crt.sh should appear in the output."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, in order. Include flags and the target domain if it is safe to disclose.
+      placeholder: |
+        1. export SHODAN_API_KEY=...
+        2. subpy -d example.com -p
+        3. Observe ...
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Termux / Android
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+      placeholder: "Python 3.12.4"
+    validations:
+      required: true
+
+  - type: input
+    id: subpy-version
+    attributes:
+      label: subpy version
+      description: Output of `subpy --version`.
+      placeholder: "subpy, version 1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install subpy?
+      options:
+        - pip
+        - pipx
+        - From source (git clone + pip install -e .)
+        - Termux / pkg
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command used
+      description: The full command line, including every flag.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output and logs
+      description: |
+        Paste the output, and add `-v` to your command for per-source timings and errors.
+        Backticks are not needed — this box renders as shell output.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I was authorized to scan the target domain (I own it or have written permission).
+          required: true

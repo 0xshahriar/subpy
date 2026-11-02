@@ -1,0 +1,108 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+pip-wheel-metadata/
+share/python-wheels/
+wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version.bak
+.env
+
+# Test / coverage / type-check caches
+.pytest_cache/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pyre/
+
+# Build backends and packagers
+*.manifest
+*.spec
+__pypackages__/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Scan output: result files are generated, never committed.
+# Scoped to the root and to output directories so source files,
+# package metadata and docs are never swallowed.
+/*.txt
+/*.json
+/*.csv
+/*.html
+/results/
+/out/
+/output/
+/subpy-out/
+/*.resolved.txt
+
+# The embedded wordlist ships with the package and MUST stay tracked.
+!subpy/data/
+!subpy/data/*.txt
+
+# Local subpy state (update-check cache, resolver health)
+.subpy/
+
+# API keys and local config
+.env.*
+!.env.example
+keys.txt
+config.local.*
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+.project
+.settings/
+*.iml
+
+# OS metadata
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# NOTE: wordlist data under subpy/data/ is tracked on purpose.
+# It is part of the package and must never be ignored.
