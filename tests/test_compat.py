@@ -12,7 +12,10 @@ exercised.
 from __future__ import annotations
 
 import ast
+import json
+import os
 import pathlib
+import signal
 import sys
 import unittest
 
@@ -315,3 +318,122 @@ class TestSourceContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInterruptBehaviour(unittest.TestCase):
+    """Ctrl-C must exit promptly with 130 and keep partial results.
+
+    Regression guard: earlier versions hung for 90+ seconds because
+    ``asyncio.run`` waits on blocked executor jobs at teardown, and exited
+    with a traceback because the handler raised inside the loop.
+    """
+
+    def test_sigint_exits_130_quickly_with_results(self):
+        import subprocess
+        import time
+
+        process = subprocess.Popen(
+            [sys.executable, "-m", "subpy", "-d", "example.com", "--no-update-check", "--no-color"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(PACKAGE_ROOT.parent),
+        )
+        time.sleep(3)
+        started = time.monotonic()
+        process.send_signal(signal.SIGINT)
+        try:
+            stdout, stderr = process.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            self.fail("subpy did not exit within 20s of SIGINT")
+
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 10.0, f"shutdown took {elapsed:.1f}s")
+        self.assertEqual(process.returncode, 130, f"stderr: {stderr[-800:]}")
+        self.assertNotIn("Traceback", stderr)
+        self.assertIn("interrupted", stderr.lower())
+
+    def test_sigterm_exits_143(self):
+        import subprocess
+        import time
+
+        # A broad wordlist keeps the process busy long enough for the signal
+        # to land mid-scan without depending on network speed.
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "subpy",
+                "-d",
+                "example.com",
+                "-a",
+                "--wordlist-limit",
+                "900",
+                "--no-update-check",
+                "--no-color",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(PACKAGE_ROOT.parent),
+        )
+        time.sleep(1.5)
+        if process.poll() is not None:
+            self.skipTest("scan finished before the signal could be delivered")
+        process.send_signal(signal.SIGTERM)
+        try:
+            _stdout, stderr = process.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            self.fail("subpy did not exit within 20s of SIGTERM")
+        self.assertEqual(process.returncode, 143, f"stderr: {stderr[-800:]}")
+
+    def test_sigint_also_flushes_output_file(self):
+        """An interrupted scan must still write what it found."""
+        import subprocess
+        import tempfile
+        import time
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "partial.json")
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "subpy",
+                    "-d",
+                    "example.com",
+                    "-a",
+                    "--wordlist-limit",
+                    "900",
+                    "-o",
+                    target,
+                    "-f",
+                    "json",
+                    "--no-update-check",
+                    "--no-color",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=str(PACKAGE_ROOT.parent),
+            )
+            time.sleep(4.0)
+            if process.poll() is not None:
+                self.skipTest("scan finished before the signal could be delivered")
+            process.send_signal(signal.SIGINT)
+            try:
+                process.communicate(timeout=20)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                self.fail("subpy did not exit within 20s of SIGINT")
+
+            self.assertTrue(os.path.isfile(target), "no output file written")
+            with open(target, encoding="utf-8") as handle:
+                payload = json.load(handle)
+            self.assertIn("hosts", payload)
+            self.assertGreaterEqual(payload["count"], 1)

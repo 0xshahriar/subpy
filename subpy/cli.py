@@ -417,41 +417,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger=reporter.note,
     )
 
-    # -- signal handling ---------------------------------------------------
-    loop_holder: dict = {}
+    # -- execution ---------------------------------------------------------
+    #
+    # The loop is driven by hand rather than with asyncio.run().
+    #
+    # asyncio.run() ends with `loop.shutdown_default_executor()`, which waits
+    # for every in-flight executor job. Those jobs are blocking urlopen calls
+    # inside passive sources, so a Ctrl-C during a slow source kept the
+    # process alive for 90+ seconds (measured, stack in Runner.close). Skipping
+    # that step lets the process exit immediately; the OS reclaims the socket.
+    terminated: dict = {"signal": 0}
+    hosts: list[Host] = []
+    exit_code = EXIT_OK
 
-    terminated = {"signal": 0}
-
-    def _on_interrupt(signum, frame) -> None:  # noqa: ANN001, ARG001
-        scanner.stop()
-        terminated["signal"] = EXIT_INTERRUPT
-        raise KeyboardInterrupt
-
-    def _on_term(signum, frame) -> None:  # noqa: ANN001, ARG001
-        # SIGTERM means "stop now, keep what you have" rather than a crash.
-        scanner.stop()
-        terminated["signal"] = EXIT_TERM
-        raise KeyboardInterrupt
-
-    previous: dict = {}
-    handlers = {"SIGINT": _on_interrupt, "SIGTERM": _on_term}
-    for sig_name, handler in handlers.items():
-        sig = getattr(signal, sig_name, None)
-        if sig is None:
-            continue
-        with contextlib.suppress(OSError, ValueError):
-            previous[sig_name] = signal.signal(sig, handler)
-
-    async def _run() -> list[Host]:
-        loop_holder["loop"] = asyncio.get_running_loop()
-        progress_task = None
-        if reporter.progress_enabled:
-            progress_task = asyncio.ensure_future(_progress_loop())
-        try:
-            return await scanner.run()
-        finally:
-            if progress_task is not None:
-                progress_task.cancel()
+    async def _scan() -> list[Host]:
+        return await scanner.run()
 
     async def _progress_loop() -> None:
         import time as _time
@@ -468,27 +448,88 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             )
 
-    hosts: list[Host] = []
-    exit_code = EXIT_OK
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        hosts = asyncio.run(_run())
-    except KeyboardInterrupt:
+        from .core.pool import install_default_executor
+        from .core.pool import shutdown as shutdown_pool
+
+        install_default_executor(loop)
+
+        # Install handlers on the loop rather than with signal.signal().
+        # Raising KeyboardInterrupt from a plain handler corrupts whatever
+        # asyncio is executing and produced "Cannot close a running event
+        # loop"; scheduling the stop keeps teardown coherent.
+        def _request_stop(code: int) -> None:
+            if terminated["signal"]:
+                return  # second Ctrl-C: fall through to the default handler
+            terminated["signal"] = code
+            scanner.stop()
+            for task in asyncio.all_tasks(loop):
+                if task is not asyncio.current_task():
+                    task.cancel()
+
+        installed: list[int] = []
+        for sig_name, code in (("SIGINT", EXIT_INTERRUPT), ("SIGTERM", EXIT_TERM)):
+            sig = getattr(signal, sig_name, None)
+            if sig is None:
+                continue
+            try:
+                loop.add_signal_handler(sig, _request_stop, code)
+            except (NotImplementedError, RuntimeError, ValueError):
+                # Windows' proactor loop and some embedded builds cannot do
+                # this; install a plain handler as a fallback.
+                with contextlib.suppress(OSError, ValueError):
+                    signal.signal(
+                        sig,
+                        lambda *_a, _c=code: (_request_stop(_c), None)[1],
+                    )
+            else:
+                installed.append(sig)
+
+        progress_task = None
+        if reporter.progress_enabled:
+            progress_task = loop.create_task(_progress_loop())
+
+        try:
+            hosts = loop.run_until_complete(_scan())
+        except asyncio.CancelledError:
+            hosts = scanner.results()
+        except KeyboardInterrupt:
+            scanner.stop()
+            hosts = scanner.results()
+        finally:
+            if progress_task is not None:
+                progress_task.cancel()
+            with contextlib.suppress(Exception):
+                # One brief pass lets cancelled tasks unwind their finally
+                # blocks; it must not wait on blocked sockets.
+                loop.run_until_complete(asyncio.sleep(0))
+            for sig in installed:
+                with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                    loop.remove_signal_handler(sig)
+    finally:
+        with contextlib.suppress(Exception):
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for task in pending:
+                task.cancel()
+        with contextlib.suppress(Exception):
+            shutdown_pool(wait=False)
+        with contextlib.suppress(Exception):
+            # Deliberately NOT loop.shutdown_default_executor(): that join is
+            # exactly what made Ctrl-C hang.
+            loop.close()
+        asyncio.set_event_loop(None)
         reporter.finish_progress()
+
+    if terminated["signal"]:
         scanner.summary.interrupted = True
-        hosts = scanner.results()
-        exit_code = terminated["signal"] or EXIT_INTERRUPT
+        exit_code = terminated["signal"]
         if not args.quiet:
             label = "terminated" if exit_code == EXIT_TERM else "interrupted"
             reporter.warn(f"{label} - keeping {len(hosts)} hosts found so far")
-    finally:
-        for sig_name, handler in previous.items():
-            sig = getattr(signal, sig_name, None)
-            if sig is not None:
-                with contextlib.suppress(OSError, ValueError):
-                    signal.signal(sig, handler)
-        reporter.finish_progress()
 
-    if exit_code != EXIT_INTERRUPT:
+    if exit_code == EXIT_OK:
         reporter.summary(scanner.summary, hosts)
 
     if args.output:

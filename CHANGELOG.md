@@ -55,9 +55,15 @@ First public release.
   servers, and positive plus negative caching.
 - **Five output formats** — `txt`, `json`, `csv`, `md` and `html`.
 - **Automatic update check** against GitHub releases, cached for about 24 hours.
-  Disabled with `--no-update-check` or `SUBPY_NO_UPDATE`.
-- **Documented exit codes** — `0` success, `1` no results, `2` usage error,
-  `130` interrupted.
+  Disabled with `--no-update-check` or `SUBPY_NO_UPDATE`. It reports, it never
+  self-updates.
+- **Dangling CNAME detection.** A host whose CNAME target does not resolve is
+  flagged as a subdomain-takeover candidate, with the hosting provider named
+  when the target sits in known shared infrastructure.
+- **Documented exit codes** — `0` scan completed, `1` runtime error,
+  `2` usage error, `130` interrupted, `143` terminated. A completed scan that
+  finds nothing still exits `0`, so subpy composes in pipelines; pass
+  `--fail-empty` for the opposite behaviour.
 - **Environment configuration** via `SUBPY_RESOLVER`, `SUBPY_NO_UPDATE`,
   `NO_COLOR` and `FORCE_COLOR`.
 
@@ -75,6 +81,11 @@ First public release.
   misbehaving third-party API cannot crash a scan or corrupt its results.
 - All discovered hostnames are validated and scoped to the target domain before
   they are resolved or reported.
+- Existence is decided by a non-empty answer section rather than by RCODE.
+  Several large zones answer `NOERROR` with zero records for names that do not
+  exist, so a resolver that treats "no error" as "exists" reports phantom hosts.
+- The HTML report escapes all hostnames and contains no script, so a malicious
+  subdomain name cannot become stored XSS in a saved report.
 
 [Unreleased]: https://github.com/0xShahriar/subpy/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/0xShahriar/subpy/releases/tag/v1.0.0

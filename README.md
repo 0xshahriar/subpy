@@ -185,10 +185,15 @@ API keys are read from the environment too — `CENSYS_API_ID`, `SHODAN_API_KEY`
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Scan completed, results found |
-| `1` | Scan completed, no results |
+| `0` | Scan completed (with or without results) |
+| `1` | Runtime error, or nothing found when `--fail-empty` is set |
 | `2` | Usage error |
-| `130` | Interrupted (Ctrl-C) |
+| `130` | Interrupted (Ctrl-C) — partial results are still written |
+| `143` | Terminated (SIGTERM) — partial results are still written |
+
+A completed scan exits `0` even when it finds nothing, so subpy composes
+cleanly in pipelines. Pass `--fail-empty` if you want a non-zero code in that
+case.
 
 ## Output formats
 
