@@ -40,6 +40,7 @@ from .models import (
     Host,
     ScanSummary,
 )
+from .nameservers import NameserverIndex
 from .resolver import AsyncResolver, ResolverConfig, system_resolvers
 from .wildcard import WildcardManager
 
@@ -80,6 +81,7 @@ class ScanConfig:
         include_unresolved: bool = False,
         retry_unresolved: bool = True,
         dedupe_subdomains: bool = True,
+        exclude_nameservers: bool = True,
         verbose: bool = False,
     ) -> None:
         self.domain = normalize_name(domain)
@@ -108,6 +110,7 @@ class ScanConfig:
         self.include_unresolved = include_unresolved
         self.retry_unresolved = retry_unresolved
         self.dedupe_subdomains = dedupe_subdomains
+        self.exclude_nameservers = exclude_nameservers
         self.verbose = verbose
 
 
@@ -135,6 +138,9 @@ class Scanner:
         self._wildcard: WildcardManager | None = None
         self._stop = False
         self._seen_labels: set[str] = set()
+        self.nameservers = NameserverIndex(
+            self.config.domain, enabled=self.config.exclude_nameservers
+        )
 
     # -- lifecycle --------------------------------------------------------
     async def run(self) -> list[Host]:
@@ -160,6 +166,11 @@ class Scanner:
                 samples=self.config.wildcard_samples,
                 enabled=self.config.wildcard,
             )
+
+            # Learn the delegation before resolving anything, so a
+            # nameserver can never be reported as a discovered subdomain.
+            if self.config.exclude_nameservers:
+                await self._load_nameservers()
 
             if self.config.wildcard:
                 info = await self._wildcard.detect()
@@ -321,6 +332,8 @@ class Scanner:
             if result.hosts:
                 async with self._lock:
                     for host in result.hosts:
+                        if self._is_nameserver(host):
+                            continue
                         collected.add(host)
                         entry = self.hosts.get(host)
                         if entry is None:
@@ -454,6 +467,51 @@ class Scanner:
         self.summary.queries += len(names)
         return hits
 
+    async def _load_nameservers(self) -> None:
+        """Query the NS RRset and SOA for the domain and any known subzone.
+
+        One query for the apex covers the common case (a.ns.example.com and
+        friends). Subzone delegations are picked up opportunistically from
+        the authority sections of responses during the scan, via
+        :meth:`_harvest_nameservers`.
+        """
+        assert self._resolver is not None
+        try:
+            msg = await self._resolver.query(self.config.domain, QTYPE["NS"])
+        except Exception:  # never let this abort a scan
+            return
+        if msg is None:
+            return
+        self.nameservers.add_from_message(msg)
+
+        # The SOA names the primary server, which occasionally is not in the
+        # NS set returned by a resolver with a partial view.
+        soa = msg.soa()
+        if soa is not None and soa.target:
+            self.nameservers.add(soa.target)
+
+        if self.nameservers.names:
+            self.log(f"nameservers: {self.nameservers.describe()}")
+
+    def _harvest_nameservers(self, msg: DNSMessage | None) -> None:
+        """Record any NS/SOA names visible in a response.
+
+        Authority sections are how a subzone's own nameservers show up during
+        a normal scan, so this costs nothing extra.
+        """
+        if msg is None or not self.config.exclude_nameservers:
+            return
+        self.nameservers.add_from_message(msg)
+
+    def _is_nameserver(self, name: str) -> bool:
+        """True when *name* is part of the domain's own delegation."""
+        if not self.config.exclude_nameservers:
+            return False
+        if name in self.nameservers:
+            self.nameservers.note_skipped(name)
+            return True
+        return False
+
     async def _verify_one(self, name: str, source: str | None) -> bool:
         """Resolve and validate one candidate. Returns True when real."""
         assert self._resolver is not None
@@ -477,9 +535,16 @@ class Scanner:
         """Resolve a name already claimed by :meth:`_verify_one`."""
         assert self._resolver is not None
         assert self._wildcard is not None
+        # The delegation itself is not a discovered subdomain. Check before
+        # spending a query: a.ns.example.com resolves, but it is the zone's
+        # own nameserver, not a host the owner published.
+        if self._is_nameserver(name):
+            return False
+
         started = time.monotonic()
         msg: DNSMessage | None = await self._resolver.query(name, QTYPE["A"])
         elapsed = (time.monotonic() - started) * 1000.0
+        self._harvest_nameservers(msg)
 
         host = self.hosts.get(name)
         if host is None:
@@ -593,7 +658,13 @@ class Scanner:
         for nameserver in nameservers[:3]:
             try:
                 transferred = await asyncio.wait_for(
-                    _axfr(nameserver, domain, self.config.timeout * 3), timeout=12.0
+                    _axfr(
+                        nameserver,
+                        domain,
+                        self.config.timeout * 3,
+                        self.nameservers.names,
+                    ),
+                    timeout=12.0,
                 )
             except (asyncio.TimeoutError, Exception):
                 continue
@@ -622,6 +693,20 @@ class Scanner:
         results = [h for h in self.hosts.values() if h.resolved]
         if self.config.include_unresolved:
             results += [h for h in self.hosts.values() if not h.resolved and not h.wildcard]
+
+        # Final safety net. Each discovery path already checks, but every
+        # result passes through here, so a new path cannot reintroduce a
+        # nameserver as a "discovered subdomain" without failing loudly.
+        if self.config.exclude_nameservers and self.nameservers.names:
+            kept: list[Host] = []
+            for host in results:
+                if host.name in self.nameservers:
+                    self.nameservers.note_skipped(host.name)
+                    continue
+                kept.append(host)
+            self.summary.nameservers_excluded = len(self.nameservers.skipped)
+            results = kept
+
         results.sort(key=lambda h: (h.name.count("."), h.name))
         return results
 
@@ -637,13 +722,20 @@ class Scanner:
         return self._wildcard.to_dict() if self._wildcard else []
 
 
-async def _axfr(nameserver: str, domain: str, timeout: float) -> set[str]:
+async def _axfr(
+    nameserver: str,
+    domain: str,
+    timeout: float,
+    delegated: set[str] | None = None,
+) -> set[str]:
     """Try a TCP AXFR and collect the names in the answer."""
     import struct
 
     from .dns import QTYPE as _Q
     from .dns import build_query, parse_message
 
+    if delegated is None:
+        delegated = set()
     if ":" in nameserver:
         return set()
     try:
@@ -676,13 +768,19 @@ async def _axfr(nameserver: str, domain: str, timeout: float) -> set[str]:
             if msg.rcode != 0:
                 break
             for rr in msg.answers:
+                if rr.rtype == _Q["NS"]:
+                    # An AXFR dumps the NS RRset next to the host records.
+                    # Record the delegation for the caller to honour, but
+                    # never offer a nameserver as a discovered subdomain.
+                    if rr.target:
+                        delegated.add(rr.target)
+                    continue
+                if rr.rtype == _Q["SOA"] and rr.target:
+                    delegated.add(rr.target)
+                    continue
                 if rr.name.endswith("." + domain) or rr.name == domain:
                     names.add(rr.name)
-                if (
-                    rr.rtype in (_Q["CNAME"], _Q["NS"])
-                    and rr.target
-                    and rr.target.endswith("." + domain)
-                ):
+                if rr.rtype == _Q["CNAME"] and rr.target and rr.target.endswith("." + domain):
                     names.add(rr.target)
             # The closing SOA terminates the transfer.
             if len(names) > 1 and msg.answers and any(rr.rtype == _Q["SOA"] for rr in msg.answers):

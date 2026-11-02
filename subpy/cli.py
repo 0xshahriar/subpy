@@ -202,6 +202,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="random probes used per level (default 3)",
     )
 
+    nameservers = parser.add_argument_group("nameservers")
+    nameservers.add_argument(
+        "--include-nameservers",
+        action="store_true",
+        help="report the domain's own nameservers as subdomains",
+    )
+
     sources = parser.add_argument_group("sources")
     sources.add_argument(
         "-s",
@@ -402,6 +409,7 @@ def main(argv: Sequence[str] | None = None, early_signal: dict | None = None) ->
         resolvers=resolver_list,
         use_system_resolvers=not args.no_system_resolvers,
         wildcard=not args.no_wildcard,
+        exclude_nameservers=not args.include_nameservers,
         wildcard_samples=args.wildcard_samples,
         sources=_split_csv(args.sources),
         exclude_sources=_split_csv(args.exclude_sources),

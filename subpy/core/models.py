@@ -125,6 +125,7 @@ class ScanSummary:
     candidates: int = 0
     resolved: int = 0
     wildcard_filtered: int = 0
+    nameservers_excluded: int = 0
     passive_found: int = 0
     active_found: int = 0
     permutation_found: int = 0
@@ -158,6 +159,7 @@ class ScanSummary:
             "candidates": self.candidates,
             "resolved": self.resolved,
             "wildcard_filtered": self.wildcard_filtered,
+            "nameservers_excluded": self.nameservers_excluded,
             "passive_found": self.passive_found,
             "active_found": self.active_found,
             "permutation_found": self.permutation_found,
