@@ -129,6 +129,7 @@ class Scanner:
 
         self.summary = ScanSummary(domain=config.domain)
         self.hosts: dict[str, Host] = {}
+        self._in_progress: set[str] = set()
         self._lock = asyncio.Lock()
         self._resolver: AsyncResolver | None = None
         self._wildcard: WildcardManager | None = None
@@ -459,6 +460,23 @@ class Scanner:
         assert self._wildcard is not None
 
         name = normalize_name(name)
+        # Claim the name before awaiting. Passive discovery and brute force
+        # run concurrently and routinely surface the same candidate; without
+        # this guard both coroutines proceed, both resolve, and on_host fires
+        # twice for one host (the file is deduplicated later, but live output
+        # printed it twice and summary.resolved over-counted).
+        if name in self._in_progress:
+            return False
+        self._in_progress.add(name)
+        try:
+            return await self._verify_claimed(name, source)
+        finally:
+            self._in_progress.discard(name)
+
+    async def _verify_claimed(self, name: str, source: str | None) -> bool:
+        """Resolve a name already claimed by :meth:`_verify_one`."""
+        assert self._resolver is not None
+        assert self._wildcard is not None
         started = time.monotonic()
         msg: DNSMessage | None = await self._resolver.query(name, QTYPE["A"])
         elapsed = (time.monotonic() - started) * 1000.0
@@ -487,8 +505,20 @@ class Scanner:
         # send NXDOMAIN. Keying on NXDOMAIN produced 104 false positives in
         # 105 probes. A name exists iff it has at least one answer record.
         if not msg.answers:
-            host.resolved = False
-            return False
+            # An IPv6-only host legitimately has zero A records. Falling back
+            # to AAAA has to happen here, before the existence test concludes
+            # "does not exist", otherwise the fallback further down is
+            # unreachable for exactly the case it exists to cover.
+            if self.config.include_ipv6:
+                v6 = await self._resolver.query(name, QTYPE["AAAA"])
+                if v6 is not None and v6.answers:
+                    msg = v6
+                else:
+                    host.resolved = False
+                    return False
+            else:
+                host.resolved = False
+                return False
 
         # Wildcard check happens before anything is announced so the user
         # never sees a name that gets taken back a second later.

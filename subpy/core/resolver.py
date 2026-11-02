@@ -383,9 +383,16 @@ class AsyncResolver:
 
         if cache_on and msg is not None:
             ttl = self._min_ttl(msg)
-            # Negative caching keeps brute-force re-runs cheap.
             if not msg.answers:
-                ttl = min(ttl or 300, 300)
+                # Negative caching keeps brute-force re-runs cheap, but a
+                # NOERROR-with-no-answers reply is often transient (load
+                # shedding, a resolver with a stale view). Caching it for
+                # five minutes turns one hiccup into a missed host, so cap it
+                # far lower than an authoritative NXDOMAIN.
+                negative_ttl = 45 if msg.rcode == 3 else 20
+                ttl = min(ttl or negative_ttl, negative_ttl)
+            # A ttl of exactly 0 means "do not cache"; only entries with a
+            # positive lifetime are stored.
             if ttl > 0:
                 self._cache[key] = (time.monotonic() + ttl, msg)
         return msg
@@ -473,11 +480,14 @@ class AsyncResolver:
                     name, qtype, qid=qid, edns=True, edns_size=self.config.edns_size
                 )
             except DNSFormatError:
+                # A name this module cannot encode (e.g. it survives
+                # is_valid_name but exceeds the wire limit once the root byte
+                # is counted) must not leak the in-flight slot: after enough
+                # of them _pick_channels() sees no ready channel and load
+                # balancing collapses for the rest of the scan.
                 self._release_qid(qid)
+                self._inflight[address] = max(0, self._inflight.get(address, 1) - 1)
                 return None
-            finally:
-                if True:
-                    pass
 
             if health is not None:
                 health.sent += 1
@@ -614,9 +624,19 @@ class AsyncResolver:
         status = payload.get("Status")
         if status is None:
             return None
-        msg = DNSMessage(id=0, flags=int(status) & 0xF)
-        for ans in payload.get("Answer", []) or []:
+        try:
+            status_int = int(status)
+        except (TypeError, ValueError):
+            # A hostile or broken resolver may answer {"Status": "x"}.
+            return None
+        msg = DNSMessage(id=0, flags=status_int & 0xF)
+        answers = payload.get("Answer", [])
+        if not isinstance(answers, list):
+            return None
+        for ans in answers:
             try:
+                if not isinstance(ans, dict):
+                    continue
                 rtype = int(ans.get("type", 0))
                 rclass = int(ans.get("") or 1) if False else 1
                 ttl = int(ans.get("TTL", 0) or 0)

@@ -53,6 +53,12 @@ __all__ = [
 # Shared-infrastructure suffixes that behave like wildcards.
 # Resolving *anything* under these is meaningless: every label "exists".
 # --------------------------------------------------------------------------
+# Verified by probing three random labels per suffix against three public
+# resolvers (2026-11-02). Every entry answered all three; anything that did
+# not was removed rather than guessed at. fly.dev was in this list and was
+# measured to answer 0/12 - its apex and flyctl.fly.dev exist, random labels
+# return NXDOMAIN - so it is a *shared hosting* domain, not a wildcard, and
+# treating it as one deleted real hosts CNAMEd into it.
 SAA_WILDCARD_SUFFIXES: tuple[str, ...] = (
     # Verified on 2026-11-02 by probing 18 random labels under each suffix:
     # every entry below answered for a name that cannot exist. Suffixes that
@@ -70,7 +76,6 @@ SAA_WILDCARD_SUFFIXES: tuple[str, ...] = (
     "surge.sh",
     "glitch.me",
     "railway.app",
-    "fly.dev",
     "appspot.com",
     "web.app",
     "firebaseapp.com",
@@ -108,7 +113,11 @@ SAA_WILDCARD_SUFFIXES: tuple[str, ...] = (
 # Shared infrastructure that is *not* a wildcard but whose hosts are still
 # almost never in scope for the target domain. These are reported, not
 # silently dropped: a customer subdomain of these is legitimate.
+# Hosts customer content but does NOT answer for random labels, so a host
+# here must never be filtered - only annotated. fly.dev belongs to this list:
+# measured 0/12 on random labels while its apex and flyctl.fly.dev resolve.
 SHARED_INFRA_SUFFIXES: tuple[str, ...] = (
+    "fly.dev",
     "amazonaws.com",
     "cloudfront.net",
     "elasticbeanstalk.com",
@@ -430,8 +439,15 @@ class WildcardManager:
         parent = name.split(".", 1)[1] if "." in name else ""
         info = self.levels.get(parent)
         if info is None or not info.active:
-            self._verified[name] = True
-            return False
+            # The exact parent may not have been profiled yet. A deeper name
+            # (a.b.example.com) must still be judged against the wildcard that
+            # governs it (*.example.com), otherwise RFC 4592 synthesis at
+            # depth 2+ is reported as a real host. detect_for_name() profiles
+            # that level on first encounter, bounded by max_levels.
+            info = await self.detect_for_name(name)
+            if info is None or not info.active:
+                self._verified[name] = True
+                return False
 
         if self.matches(name, msg):
             self.stats["filtered"] += 1
@@ -445,17 +461,44 @@ class WildcardManager:
         # Static match failed. In an ambiguous (rotating) zone that is
         # expected for noise too, so confirm with a fresh control probe at the
         # same depth before letting the name through.
+        #
+        # Two probes are used rather than one. A zone that derives an address
+        # per label (vercel.app: 216.198.79.<n> / 64.29.17.<n>) never returns
+        # two *identical* answers, so exact comparison alone would let every
+        # random label through. What is stable is the surrounding network, so
+        # a second signal - "the observed addresses live in the same network
+        # that this wildcard has only ever produced" - is accepted once two
+        # independent random labels agree on that network.
         if info.ambiguous or info.dynamic:
-            probe = f"{random_label(14)}.{parent}"
-            probe_msg = await self.resolver.query(probe, QTYPE["A"], use_cache=False)
-            if probe_msg is not None:
+            observed = v4 | v6
+            sample_networks: set[str] = set()
+            matched = 0
+            for _ in range(2):
+                probe = f"{random_label(14)}.{parent}"
+                probe_msg = await self.resolver.query(probe, QTYPE["A"], use_cache=False)
+                if probe_msg is None:
+                    continue
                 pv4, pv6, pcnames = _response_fingerprint(probe_msg)
-                if (v4 | v6) == (pv4 | pv6) and cnames == pcnames and (v4 or v6 or cnames):
-                    info.addresses |= pv4
-                    info.v6_addresses |= pv6
-                    info.cnames |= pcnames
-                    self.stats["filtered"] += 1
-                    return True
+                if (observed) and (observed == (pv4 | pv6)) and cnames == pcnames:
+                    matched += 1
+                sample_networks |= {_network_of(a) for a in (pv4 | pv6)}
+                info.addresses |= pv4
+                info.v6_addresses |= pv6
+                info.cnames |= pcnames
+
+            # Per-label rotation inside a stable network: every observed
+            # address sits in a network this wildcard generated, and the
+            # probe set is narrow enough that coincidence is implausible.
+            network_match = (
+                bool(observed)
+                and sample_networks
+                and {_network_of(a) for a in observed} <= sample_networks
+                and info.networks
+                and {_network_of(a) for a in observed} <= (info.networks | sample_networks)
+            )
+            if matched or (network_match and len(sample_networks) <= 2):
+                self.stats["filtered"] += 1
+                return True
 
         self._verified[name] = True
         self.stats["verified_extra"] += 1

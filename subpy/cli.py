@@ -20,7 +20,7 @@ import sys
 from collections.abc import Sequence
 
 from . import __version__
-from .core.dns import is_valid_name, normalize_name
+from .core.dns import is_ip, is_valid_name, normalize_name
 from .core.models import Host
 from .core.scanner import ScanConfig, Scanner
 from .core.wordlists import resolve_wordlist_path
@@ -362,6 +362,11 @@ def main(argv: Sequence[str] | None = None, early_signal: dict | None = None) ->
     normalised = normalize_name(domain)
     if not normalised or not is_valid_name(normalised) or "." not in normalised:
         return _fail(f"'{args.domain}' does not look like a domain")
+    # A bare address parses as a "name" with dots, but brute-forcing
+    # 8.8.8.8 finds nothing and exits 0, which reads as "this host has no
+    # subdomains" rather than "that is not a domain".
+    if is_ip(normalised):
+        return _fail(f"'{args.domain}' is an IP address, not a domain")
     domain = normalised
 
     if args.passive_only and args.active_only:
@@ -556,7 +561,9 @@ def main(argv: Sequence[str] | None = None, early_signal: dict | None = None) ->
                 summary=scanner.summary,
                 with_ip=args.with_ip,
             )
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
+            # ValueError covers paths the filesystem layer rejects outright,
+            # such as one containing a NUL byte.
             print(f"{PROG}: error: cannot write {args.output}: {exc}", file=sys.stderr)
             return EXIT_USAGE
         if not args.quiet:
@@ -568,7 +575,9 @@ def main(argv: Sequence[str] | None = None, early_signal: dict | None = None) ->
     # A completed scan exits 0 even when nothing was found: "no subdomains"
     # is a valid answer, and non-zero would break pipelines that use subpy as
     # a probe step. Scripts that want the opposite opt in with --fail-empty.
-    if args.fail_empty and not hosts:
+    if args.fail_empty and not hosts and exit_code == EXIT_OK:
+        # Never mask 130/143: "interrupted with nothing found" is an
+        # interruption, not an empty result.
         exit_code = EXIT_RUNTIME
 
     # Everything user-visible is done: the summary is printed and any output
